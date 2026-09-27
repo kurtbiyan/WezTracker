@@ -1,0 +1,116 @@
+name: Build WezTracker from Release ZIP
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build WezTracker APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Download source ZIP from Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -e
+          mkdir -p source
+          gh release download "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "WezTracker-source.zip" \
+            --dir source
+
+          test -f source/WezTracker-source.zip
+
+      - name: Prepare source ZIP for manual workflow
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -e
+          mkdir -p source
+
+          ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1 || true)
+
+          if [ -z "$ZIP" ]; then
+            echo "Manual runs require a source ZIP in the repository."
+            exit 1
+          fi
+
+          cp "$ZIP" source/WezTracker-source.zip
+
+      - name: Extract WezTracker source
+        run: |
+          set -e
+          rm -rf build-source
+          mkdir -p build-source
+
+          unzip -q source/WezTracker-source.zip -d build-source
+
+          PROJECT_DIR=$(find build-source \
+            -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+            -print -quit)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android project was not found in the ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PROJECT_DIR")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Build debug APK
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+          gradle assembleDebug --no-daemon
+
+      - name: Collect APK
+        run: |
+          set -e
+          APK=$(find "$PROJECT_DIR" -type f -name "*.apk" -print -quit)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          mkdir -p release
+          cp "$APK" release/WezTracker-v1.0.0.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WezTracker-v1.0.0-APK
+          path: release/WezTracker-v1.0.0.apk
+          if-no-files-found: error
+
+      - name: Attach APK to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            release/WezTracker-v1.0.0.apk \
+            --repo "${{ github.repository }}" \
+            --clobber
